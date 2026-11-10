@@ -21,6 +21,8 @@ jobs:
           java-version: '17'
       - name: Android SDK and NDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android toolchain
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Gradle
@@ -29,8 +31,6 @@ jobs:
           gradle-version: '8.9'
       - name: Build ARM64 debug APK
         working-directory: NEXUS_AI_ADVANCED_0.1.2
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: gradle --no-daemon --stacktrace assembleDebug
       - name: Verify APK exists and is non-empty
         run: test -s NEXUS_AI_ADVANCED_0.1.2/app/build/outputs/apk/debug/app-debug.apk
