@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Extraer proyecto
-        run: unzip -o NEXUS_AI_ADVANCED_0.1.0_PROJECT_FIXED.zip -d .
+        run: unzip -o NEXUS_AI_ADVANCED_0.1.1_PROJECT_FIXED.zip -d .
 
       - name: Instalar Java 17
         uses: actions/setup-java@v4
