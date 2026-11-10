@@ -1,0 +1,49 @@
+
+name: Crear APK NEXUS AI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [principal]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar proyecto
+        uses: actions/checkout@v4
+
+      - name: Extraer proyecto
+        run: unzip -o NEXUS_AI_ADVANCED_0.1.0_PROJECT_FIXED.zip -d .
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar herramientas Android
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Compilar APK
+        working-directory: NEXUS_AI_ADVANCED_0.1.0
+        run: gradle --no-daemon assembleDebug
+
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS_AI_ADVANCED_APK
+          path: NEXUS_AI_ADVANCED_0.1.0/app/build/outputs/apk/debug/*.apk
+          
