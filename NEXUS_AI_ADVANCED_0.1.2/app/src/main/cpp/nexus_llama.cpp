@@ -3,62 +3,160 @@
 #include <vector>
 #include <mutex>
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include "llama.h"
 
-static llama_model* model = nullptr;
-static llama_context* context = nullptr;
-static std::mutex guard;
+static llama_model* g_model = nullptr;
+static llama_context* g_context = nullptr;
+static std::mutex g_mutex;
+static bool g_backend_ready = false;
 
-extern "C" JNIEXPORT jboolean JNICALL Java_com_nexusai_advanced_LlamaEngine_nativeLoad(JNIEnv* env, jobject, jstring file) {
- std::lock_guard<std::mutex> lock(guard);
- if (context) { llama_free(context); context = nullptr; }
- if (model) { llama_model_free(model); model = nullptr; }
- const char* path = env->GetStringUTFChars(file, nullptr);
- auto mp = llama_model_default_params();
- model = llama_model_load_from_file(path, mp);
- env->ReleaseStringUTFChars(file, path);
- if (!model) return JNI_FALSE;
- auto cp = llama_context_default_params();
- cp.n_ctx = 2048; cp.n_batch = 256; cp.n_threads = 4; cp.n_threads_batch = 4;
- context = llama_init_from_model(model, cp);
- if (!context) { llama_model_free(model); model = nullptr; return JNI_FALSE; }
- return JNI_TRUE;
+static void release_model() {
+    if (g_context) {
+        llama_free(g_context);
+        g_context = nullptr;
+    }
+    if (g_model) {
+        llama_model_free(g_model);
+        g_model = nullptr;
+    }
 }
 
-extern "C" JNIEXPORT jstring JNICALL Java_com_nexusai_advanced_LlamaEngine_nativeGenerate(JNIEnv* env, jobject, jstring prompt, jint maximum) {
- std::lock_guard<std::mutex> lock(guard);
- if (!model || !context) return env->NewStringUTF("Carga primero un modelo GGUF.");
- const char* raw = env->GetStringUTFChars(prompt, nullptr);
- std::string input(raw); env->ReleaseStringUTFChars(prompt, raw);
- const llama_vocab* vocab = llama_model_get_vocab(model);
- std::vector<llama_token> tokens(input.size() + 32);
- int count = llama_tokenize(vocab, input.c_str(), (int)input.size(), tokens.data(), (int)tokens.size(), true, true);
- if (count < 0) { tokens.resize(-count); count = llama_tokenize(vocab, input.c_str(), (int)input.size(), tokens.data(), (int)tokens.size(), true, true); }
- if (count <= 0) return env->NewStringUTF("No se pudo tokenizar el mensaje.");
- tokens.resize(count);
- llama_kv_cache_clear(context);
- llama_batch batch = llama_batch_get_one(tokens.data(), (int)tokens.size());
- if (llama_decode(context, batch) != 0) return env->NewStringUTF("Falló el procesamiento del prompt.");
- auto params = llama_sampler_chain_default_params();
- llama_sampler* sampler = llama_sampler_chain_init(params);
- llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
- llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
- std::string result; char piece[512];
- int limit = std::min(std::max((int)maximum, 1), 192);
- for (int i = 0; i < limit; ++i) {
-  llama_token token = llama_sampler_sample(sampler, context, -1);
-  if (token == llama_vocab_eos(vocab)) break;
-  int n = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, true);
-  if (n > 0) result.append(piece, n);
-  llama_batch next = llama_batch_get_one(&token, 1);
-  if (llama_decode(context, next) != 0) break;
- }
- llama_sampler_free(sampler);
- return env->NewStringUTF(result.c_str());
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_nexusai_advanced_LlamaEngine_nativeLoad(JNIEnv* env, jobject, jstring file) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    release_model();
+
+    if (!g_backend_ready) {
+        llama_backend_init();
+        g_backend_ready = true;
+    }
+
+    const char* path = env->GetStringUTFChars(file, nullptr);
+    if (path == nullptr) return JNI_FALSE;
+
+    llama_model_params model_params = llama_model_default_params();
+    model_params.use_mmap = true;
+    g_model = llama_model_load_from_file(path, model_params);
+    env->ReleaseStringUTFChars(file, path);
+
+    if (g_model == nullptr) return JNI_FALSE;
+
+    llama_context_params context_params = llama_context_default_params();
+    context_params.n_ctx = 2048;
+    context_params.n_batch = 128;
+    context_params.n_ubatch = 128;
+    context_params.n_threads = 2;
+    context_params.n_threads_batch = 2;
+
+    g_context = llama_init_from_model(g_model, context_params);
+    if (g_context == nullptr) {
+        release_model();
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_nexusai_advanced_LlamaEngine_nativeUnload(JNIEnv*, jobject) {
- std::lock_guard<std::mutex> lock(guard);
- if (context) { llama_free(context); context = nullptr; }
- if (model) { llama_model_free(model); model = nullptr; }
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nexusai_advanced_LlamaEngine_nativeGenerate(JNIEnv* env, jobject, jstring user_text, jint max_tokens) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_model == nullptr || g_context == nullptr) {
+        return env->NewStringUTF("Primero carga un modelo GGUF.");
+    }
+
+    const char* raw = env->GetStringUTFChars(user_text, nullptr);
+    if (raw == nullptr) return env->NewStringUTF("No se pudo leer el mensaje.");
+    std::string user(raw);
+    env->ReleaseStringUTFChars(user_text, raw);
+
+    const llama_chat_message messages[] = {
+        {"system", "Eres NEXUS AI. Responde siempre en español claro, útil y respetuoso. Si no sabes algo, dilo con honestidad."},
+        {"user", user.c_str()}
+    };
+
+    // Usa la plantilla incluida en los metadatos GGUF (Qwen2.5 usa ChatML).
+    std::vector<char> formatted(8192, '\\0');
+    int32_t formatted_size = llama_chat_apply_template(
+        nullptr, messages, 2, true, formatted.data(), static_cast<int32_t>(formatted.size()));
+    if (formatted_size < 0) {
+        return env->NewStringUTF("El modelo no proporciona una plantilla de chat compatible.");
+    }
+    if (formatted_size >= static_cast<int32_t>(formatted.size())) {
+        formatted.resize(static_cast<size_t>(formatted_size) + 1, '\\0');
+        formatted_size = llama_chat_apply_template(
+            nullptr, messages, 2, true, formatted.data(), static_cast<int32_t>(formatted.size()));
+        if (formatted_size < 0 || formatted_size >= static_cast<int32_t>(formatted.size())) {
+            return env->NewStringUTF("No se pudo preparar el prompt del modelo.");
+        }
+    }
+
+    const llama_vocab* vocab = llama_model_get_vocab(g_model);
+    std::vector<llama_token> tokens(static_cast<size_t>(formatted_size) * 2 + 32);
+    int32_t token_count = llama_tokenize(
+        vocab, formatted.data(), formatted_size, tokens.data(),
+        static_cast<int32_t>(tokens.size()), true, true);
+    if (token_count < 0) {
+        tokens.resize(static_cast<size_t>(-token_count));
+        token_count = llama_tokenize(
+            vocab, formatted.data(), formatted_size, tokens.data(),
+            static_cast<int32_t>(tokens.size()), true, true);
+    }
+    if (token_count <= 0) return env->NewStringUTF("No se pudo tokenizar el mensaje.");
+    tokens.resize(static_cast<size_t>(token_count));
+
+    const int32_t output_limit = std::min(std::max(static_cast<int32_t>(max_tokens), 1), 192);
+    const uint32_t context_limit = llama_n_ctx(g_context);
+    if (tokens.size() + static_cast<size_t>(output_limit) >= context_limit) {
+        return env->NewStringUTF("El mensaje es demasiado largo para el contexto local de 2048 tokens.");
+    }
+
+    llama_kv_cache_clear(g_context);
+    const size_t chunk_size = std::max<size_t>(1, llama_n_batch(g_context));
+    for (size_t offset = 0; offset < tokens.size(); offset += chunk_size) {
+        const size_t count = std::min(chunk_size, tokens.size() - offset);
+        llama_batch batch = llama_batch_get_one(tokens.data() + offset, static_cast<int32_t>(count));
+        if (llama_decode(g_context, batch) != 0) {
+            return env->NewStringUTF("Falló la evaluación del prompt en llama.cpp.");
+        }
+    }
+
+    llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+    llama_sampler* sampler = llama_sampler_chain_init(sampler_params);
+    if (sampler == nullptr) return env->NewStringUTF("No se pudo iniciar el muestreador.");
+    llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
+    llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
+    llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+    std::string answer;
+    char piece[1024];
+    for (int32_t i = 0; i < output_limit; ++i) {
+        const llama_token token = llama_sampler_sample(sampler, g_context, -1);
+        llama_sampler_accept(sampler, token);
+        if (llama_vocab_is_eog(vocab, token)) break;
+
+        int32_t piece_size = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, true);
+        if (piece_size < 0) {
+            std::vector<char> larger(static_cast<size_t>(-piece_size));
+            piece_size = llama_token_to_piece(vocab, token, larger.data(),
+                                               static_cast<int32_t>(larger.size()), 0, true);
+            if (piece_size > 0) answer.append(larger.data(), static_cast<size_t>(piece_size));
+        } else if (piece_size > 0) {
+            answer.append(piece, static_cast<size_t>(piece_size));
+        }
+
+        llama_batch next = llama_batch_get_one(const_cast<llama_token*>(&token), 1);
+        if (llama_decode(g_context, next) != 0) break;
+    }
+    llama_sampler_free(sampler);
+
+    if (answer.empty()) return env->NewStringUTF("El modelo terminó sin generar texto. Intenta otra pregunta.");
+    return env->NewStringUTF(answer.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nexusai_advanced_LlamaEngine_nativeUnload(JNIEnv*, jobject) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    release_model();
 }
