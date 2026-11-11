@@ -1,0 +1,42 @@
+name: NEXUS AI 0.1.2 ARM64 APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ nexus-0.1.2 ]
+    paths:
+      - 'NEXUS_AI_ADVANCED_0.1.2/**'
+      - '.github/workflows/build-0.1.2.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android toolchain
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build ARM64 debug APK
+        working-directory: NEXUS_AI_ADVANCED_0.1.2
+        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Verify APK exists and is non-empty
+        run: test -s NEXUS_AI_ADVANCED_0.1.2/app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS_AI_ADVANCED_0.1.2-arm64-debug
+          path: NEXUS_AI_ADVANCED_0.1.2/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
