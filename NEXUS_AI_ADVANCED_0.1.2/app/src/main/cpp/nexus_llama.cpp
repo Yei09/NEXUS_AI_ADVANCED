@@ -80,14 +80,14 @@ Java_com_nexusai_advanced_LlamaEngine_nativeGenerate(JNIEnv* env, jobject, jstri
     if (chat_template == nullptr) {
         chat_template = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}";
     }
-    std::vector<char> formatted(8192, '\\0');
+    std::vector<char> formatted(8192, '\0');
     int32_t formatted_size = llama_chat_apply_template(
         chat_template, messages, 2, true, formatted.data(), static_cast<int32_t>(formatted.size()));
     if (formatted_size < 0) {
         return env->NewStringUTF("El modelo no proporciona una plantilla de chat compatible.");
     }
     if (formatted_size >= static_cast<int32_t>(formatted.size())) {
-        formatted.resize(static_cast<size_t>(formatted_size) + 1, '\\0');
+        formatted.resize(static_cast<size_t>(formatted_size) + 1, '\0');
         formatted_size = llama_chat_apply_template(
             chat_template, messages, 2, true, formatted.data(), static_cast<int32_t>(formatted.size()));
         if (formatted_size < 0 || formatted_size >= static_cast<int32_t>(formatted.size())) {
