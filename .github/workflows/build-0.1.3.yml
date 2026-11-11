@@ -1,0 +1,53 @@
+name: NEXUS AI Advanced 0.1.3 ARM64 APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ nexus-0.1.3 ]
+    paths:
+      - 'NEXUS_AI_ADVANCED_0.1.3/**'
+      - '.github/workflows/build-0.1.3.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android toolchain
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build ARM64 debug APK
+        working-directory: NEXUS_AI_ADVANCED_0.1.3
+        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Verify APK and ARM64 native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="NEXUS_AI_ADVANCED_0.1.3/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 "$APK"
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libnexus_llama.so'
+          sha256sum "$APK" | tee NEXUS_AI_ADVANCED_0.1.3-apk-sha256.txt
+          stat -c 'APK_SIZE_BYTES=%s' "$APK" | tee NEXUS_AI_ADVANCED_0.1.3-apk-size.txt
+      - name: Upload APK and build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS_AI_ADVANCED_0.1.3-arm64-candidate
+          path: |
+            NEXUS_AI_ADVANCED_0.1.3/app/build/outputs/apk/debug/app-debug.apk
+            NEXUS_AI_ADVANCED_0.1.3-apk-sha256.txt
+            NEXUS_AI_ADVANCED_0.1.3-apk-size.txt
+          if-no-files-found: error
